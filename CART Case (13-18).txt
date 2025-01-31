@@ -1,0 +1,140 @@
+// Define the Area of Interest (AOI) and center the map on it
+Map.addLayer(table, {}, 'AOI');
+Map.centerObject(table);
+
+// Load Sentinel-2 Surface Reflectance ImageCollection
+var Sentinel_Sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Filter the image collection based on bounds, date, and cloud coverage, and create a median composite
+var image = Sentinel_Sr
+  .filterBounds(table)
+  .filterDate('2024-05-01', '2024-05-30')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .median()
+  .clip(table);
+
+// Define visualization parameters for Sentinel-2 image
+var visParams = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000,
+  gamma: 1.4
+};
+Map.addLayer(image, visParams, 'Sentinel-2 Image');
+
+// Load the training points asset
+var trainingPoints = ee.FeatureCollection('projects/ee-shobhitchaturvediiitr/assets/tpoints');
+
+// Define label and input bands
+var label = 'Class';
+var bands = ['B2', 'B3', 'B4', 'B8'];
+var input = image.select(bands);
+
+// Sample the regions for training
+var trainImage = input.sampleRegions({
+  collection: trainingPoints,
+  properties: [label],
+  scale: 30
+});
+
+// Split the data into training (80%) and testing (20%) sets
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lt('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.gte('random', 0.8));
+
+// Case 13: CART Classifier with maxNodes = 10, minLeafPopulation = 1
+var classifier_C13 = ee.Classifier.smileCart({
+  maxNodes: 10,
+  minLeafPopulation: 1
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 14: CART Classifier with maxNodes = 20, minLeafPopulation = 2
+var classifier_C14 = ee.Classifier.smileCart({
+  maxNodes: 20,
+  minLeafPopulation: 2
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 15: CART Classifier with maxNodes = 50, minLeafPopulation = 2
+var classifier_C15 = ee.Classifier.smileCart({
+  maxNodes: 50,
+  minLeafPopulation: 2
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 16: CART Classifier with maxNodes = 100, minLeafPopulation = 2
+var classifier_C16 = ee.Classifier.smileCart({
+  maxNodes: 100,
+  minLeafPopulation: 2
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 17: CART Classifier with maxNodes = 500, minLeafPopulation = 5
+var classifier_C17 = ee.Classifier.smileCart({
+  maxNodes: 500,
+  minLeafPopulation: 5
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 18: CART Classifier with maxNodes = 1000, minLeafPopulation = 5
+var classifier_C18 = ee.Classifier.smileCart({
+  maxNodes: 1000,
+  minLeafPopulation: 5
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Classify the image using the trained classifier (Example: Case 18)
+var classified = input.classify(classifier_C18);
+
+// Define a palette for the classification
+var landcoverPalette = [
+  'blue',    // Water (1)
+  'yellow',  // Bareland (2)
+  'red',     // Built-up (3)
+  'green',   // Vegetation (4)
+  'black'    // Roads (5)
+];
+
+// Display the classification result on the map
+Map.addLayer(classified, {palette: landcoverPalette, min: 1, max: 5}, 'Case 18: LULC Classification');
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'Case_18_LULC_Output',
+  folder: 'GEE_Files',
+  fileNamePrefix: 'Case_18_LULC',
+  scale: 30,
+  region: table.geometry(),
+  maxPixels: 1e13
+});
+
+// Accuracy Assessment
+var classifiedTest = testSet.classify(classifier_C18);
+var confusionMatrix = classifiedTest.errorMatrix('Class', 'classification');
+
+// Print confusion matrix and accuracy metrics
+print('Case 18 Confusion Matrix:', confusionMatrix);
+print('Case 18 Overall Accuracy:', confusionMatrix.accuracy());
+print('Case 18 Kappa Coefficient:', confusionMatrix.kappa());
+print('Case 18 Producers Accuracy:', confusionMatrix.producersAccuracy());
+print('Case 18 Consumers Accuracy:', confusionMatrix.consumersAccuracy());

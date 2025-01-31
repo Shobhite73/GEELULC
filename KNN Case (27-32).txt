@@ -1,0 +1,99 @@
+// Define the Area of Interest (AOI) and center the map on it
+Map.addLayer(table, {}, 'AOI');  // Display the AOI layer
+Map.centerObject(table);  // Center the map on the AOI
+
+// Load Sentinel-2 Surface Reflectance ImageCollection
+var Sentinel_Sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Filter image collection based on bounds, date, and cloud coverage, then create a median composite
+var image = Sentinel_Sr
+            .filterBounds(table)  // Filter images based on AOI
+            .filterDate('2024-05-01', '2024-05-30')  // Filter images for May 2024
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))  // Filter for less than 20% cloud coverage
+            .median()  // Create a median composite image
+            .clip(table);  // Clip the image to the AOI
+
+// Define visualization parameters for Sentinel-2 image
+var visParams = {
+  bands: ['B4', 'B3', 'B2'],  // Use Red, Green, and Blue bands for visualization
+  min: 0,  // Minimum pixel value
+  max: 3000,  // Maximum pixel value
+  gamma: 1.4  // Adjust gamma for better contrast
+};
+Map.addLayer(image, visParams, 'Sentinel-2 Image');  // Add the image layer to the map
+
+// Load the training points asset
+var trainingPoints = ee.FeatureCollection('projects/ee-shobhitchaturvediiitr/assets/tpoints');
+
+// Define label and input bands for training data
+var label = 'Class';  // Label column containing class information
+var bands = ['B2', 'B3', 'B4', 'B8'];  // Bands for training: Blue, Green, Red, and NIR
+var input = image.select(bands);  // Select bands from the image
+
+// Sample the regions for training
+var trainImage = input.sampleRegions({
+  collection: trainingPoints,  // Training points collection
+  properties: [label],  // Property containing the class labels
+  scale: 30  // Spatial resolution in meters
+});
+
+// Split the data into training (80%) and testing (20%) sets
+var trainingData = trainImage.randomColumn();  // Add a random column for splitting
+var trainSet = trainingData.filter(ee.Filter.lt('random', 0.8));  // Training set: 80%
+var testSet = trainingData.filter(ee.Filter.gte('random', 0.8));  // Testing set: 20%
+
+// Define parameters for the KNN classifier
+// K-Nearest Neighbours Classification Cases:
+// C-27: k = 1, searchMethod = AUTO, metric = Euclidean
+// C-28: k = 3, searchMethod = LINEAR_SEARCH, metric = Manhattan
+// C-29: k = 5, searchMethod = KD_TREE, metric = Euclidean
+// C-30: k = 7, searchMethod = COVER_TREE, metric = Manhattan
+// C-31: k = 5, searchMethod = LINEAR_SEARCH, metric = BRAYCURTIS
+// C-32: k = 3, searchMethod = COVER_TREE, metric = BRAYCURTIS
+
+var k = 3;  // Number of neighbors (for example C-28: k = 3)
+var searchMethod = 'COVER_TREE';  // Search method options: AUTO, LINEAR_SEARCH, KD_TREE, COVER_TREE (example C-32: 'COVER_TREE')
+var metric = 'BRAYCURTIS';  // Distance metric options: EUCLIDEAN, MAHALANOBIS, MANHATTAN, BRAYCURTIS (example C-32: 'BRAYCURTIS')
+
+// Create the KNN classifier
+var knnClassifier = ee.Classifier.smileKNN(k, searchMethod, metric)
+    .train({
+      features: trainSet,  // Training data
+      classProperty: label,  // Class labels
+      inputProperties: bands  // Input bands for classification
+    });
+
+// Classify the image using the KNN classifier
+var classified = input.classify(knnClassifier);
+
+// Define a palette for the classification results
+var landcoverPalette = [
+  'blue',    // Water (1)
+  'yellow',  // Bareland (2)
+  'red',     // Buildup (3)
+  'green',   // Vegetation (4)
+  'black'    // Roads (5)
+];
+
+// Add the classified map layer to the map
+Map.addLayer(classified, {palette: landcoverPalette, min: 1, max: 5}, 'LULC Classification');
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,  // Classified image
+  description: 'Case_34_LULC',  // Description for the export task
+  folder: 'GEE_Files',  // Folder in Google Drive
+  fileNamePrefix: 'Case_34_LULC',  // File name prefix
+  scale: 30,  // Spatial resolution (30 meters)
+  region: table.geometry(),  // Region for export: AOI geometry
+  maxPixels: 1e13  // Maximum number of pixels to export
+});
+
+// Accuracy Assessment
+var classifiedTest = testSet.classify(knnClassifier);  // Classify the test set using the trained classifier
+var confusionMatrix = classifiedTest.errorMatrix(label, 'classification');  // Create confusion matrix
+print('Confusion matrix:', confusionMatrix);  // Print the confusion matrix
+print('Overall Accuracy:', confusionMatrix.accuracy());  // Print the overall accuracy
+print('Kappa Coefficient:', confusionMatrix.kappa());  // Print Kappa coefficient
+print('Producers Accuracy:', confusionMatrix.producersAccuracy());  // Print producer's accuracy
+print('Consumers Accuracy:', confusionMatrix.consumersAccuracy());  // Print consumer's accuracy

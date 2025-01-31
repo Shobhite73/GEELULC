@@ -1,0 +1,90 @@
+// Define the Area of Interest (AOI) and center the map on it
+Map.addLayer(table, {}, 'AOI');
+Map.centerObject(table);
+
+// Load Sentinel-2 Surface Reflectance ImageCollection
+var Sentinel_Sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Filter image collection based on bounds, date, and cloud coverage, then create a median composite
+var image = Sentinel_Sr
+            .filterBounds(table)
+            .filterDate('2024-05-01', '2024-05-30') 
+            .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20)) 
+            .median()
+            .clip(table);
+
+// Define visualization parameters for Sentinel-2 image
+var visParams = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000,
+  gamma: 1.4
+};
+Map.addLayer(image, visParams, 'Sentinel-2 Image');
+
+// Load the training points asset
+var trainingPoints = ee.FeatureCollection('projects/ee-shobhitchaturvediiitr/assets/tpoints');
+
+// Define label and input bands
+var label = 'Class';
+var bands = ['B2', 'B3', 'B4', 'B8'];
+var input = image.select(bands);
+
+// Sample the regions for training
+var trainImage = input.sampleRegions({
+  collection: trainingPoints,
+  properties: [label],
+  scale: 30
+});
+
+// Split the data into training (80%) and testing (20%) sets
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lt('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.gte('random', 0.8));
+
+// Create the Naive Bayes classifier with lambda smoothing
+// Naive Bayes Classification Cases:
+// C-33: lambda = 0.000001
+// C-34: lambda = 0.0001
+// C-35: lambda = 0.01
+var lambda = 0.0001;  // Example: C-34: lambda = 0.0001
+
+var nbClassifier = ee.Classifier.smileNaiveBayes(lambda)
+    .train({
+      features: trainSet,
+      classProperty: label,
+      inputProperties: bands
+    });
+
+// Classify the image using the Naive Bayes classifier
+var classified = input.classify(nbClassifier);
+
+// Define a palette for the classification
+var landcoverPalette = [
+  'blue',    // Water (1)
+  'yellow',  // Bareland (2)
+  'red',     // Buildup (3)
+  'green',   // Vegetation (4)
+  'black'    // Roads (5)
+];
+Map.addLayer(classified, {palette: landcoverPalette, min: 1, max: 5}, 'LULC Classification');
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'LULC_Naive-Bayes_Case_37',
+  folder: 'GEE_Files',
+  fileNamePrefix: 'LULC_nb_Case_37',
+  scale: 30,
+  region: table.geometry(),
+  maxPixels: 1e13
+});
+
+// Accuracy Assessment
+var classifiedTest = testSet.classify(nbClassifier);
+var confusionMatrix = classifiedTest.errorMatrix(label, 'classification');
+print('Confusion matrix:', confusionMatrix);
+print('Overall Accuracy:', confusionMatrix.accuracy());
+print('Kappa Coefficient:', confusionMatrix.kappa());
+print('Producers Accuracy:', confusionMatrix.producersAccuracy());
+print('Consumers Accuracy:', confusionMatrix.consumersAccuracy());

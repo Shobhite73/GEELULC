@@ -1,0 +1,120 @@
+// Define the Area of Interest (AOI) and center the map on it
+Map.addLayer(table, {}, 'AOI');
+Map.centerObject(table);
+
+// Load Sentinel-2 Surface Reflectance ImageCollection
+var Sentinel_Sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Filter the image collection based on bounds, date, and cloud coverage, and create a median composite
+var image = Sentinel_Sr
+  .filterBounds(table)
+  .filterDate('2024-05-01', '2024-05-30')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .median()
+  .clip(table);
+
+// Define visualization parameters for Sentinel-2 image
+var visParams = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000,
+  gamma: 1.4
+};
+Map.addLayer(image, visParams, 'Sentinel-2 Image');
+
+// Load the training points asset
+var trainingPoints = ee.FeatureCollection('projects/ee-shobhitchaturvediiitr/assets/tpoints');
+
+// Define label and input bands
+var label = 'Class';
+var bands = ['B2', 'B3', 'B4', 'B8'];
+var input = image.select(bands);
+
+// Sample the regions for training
+var trainImage = input.sampleRegions({
+  collection: trainingPoints,
+  properties: [label],
+  scale: 30
+});
+
+// Split the data into training (80%) and testing (20%) sets
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lt('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.gte('random', 0.8));
+
+// Case 9: Minimum Distance Classifier - Euclidean, kNearest = 1
+var classifier_C9 = ee.Classifier.minimumDistance({
+  metric: 'euclidean',  // Distance metric is Euclidean
+  kNearest: 1           // Considering the nearest 1 neighbor
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 10: Minimum Distance Classifier - Mahalanobis, kNearest = 1
+var classifier_C10 = ee.Classifier.minimumDistance({
+  metric: 'mahalanobis', // Distance metric is Mahalanobis
+  kNearest: 1           // Considering the nearest 1 neighbor
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 11: Minimum Distance Classifier - Cosine, kNearest = 1
+var classifier_C11 = ee.Classifier.minimumDistance({
+  metric: 'cosine',  // Distance metric is Cosine
+  kNearest: 1        // Considering the nearest 1 neighbor
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 12: Minimum Distance Classifier - Manhattan, kNearest = 1
+var classifier_C12 = ee.Classifier.minimumDistance({
+  metric: 'manhattan',  // Distance metric is Manhattan
+  kNearest: 1          // Considering the nearest 1 neighbor
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Classify the image using the trained classifier (Example: Case 12)
+var classified = input.classify(classifier_C12);
+
+// Define a palette for the classification
+var landcoverPalette = [
+  'blue',    // Water (1)
+  'yellow',  // Bareland (2)
+  'red',     // Built-up (3)
+  'green',   // Vegetation (4)
+  'black'    // Roads (5)
+];
+
+// Display the classification result on the map
+Map.addLayer(classified, {palette: landcoverPalette, min: 1, max: 5}, 'Case 12: LULC Classification');
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'Case_12_LULC_Output',
+  folder: 'GEE_Files',
+  fileNamePrefix: 'Case_12_LULC',
+  scale: 30,
+  region: table.geometry(),
+  maxPixels: 1e13
+});
+
+// Accuracy Assessment
+var classifiedTest = testSet.classify(classifier_C12);
+var confusionMatrix = classifiedTest.errorMatrix('Class', 'classification');
+
+// Print confusion matrix and accuracy metrics
+print('Case 12 Confusion Matrix:', confusionMatrix);
+print('Case 12 Overall Accuracy:', confusionMatrix.accuracy());
+print('Case 12 Kappa Coefficient:', confusionMatrix.kappa());
+print('Case 12 Producers Accuracy:', confusionMatrix.producersAccuracy());
+print('Case 12 Consumers Accuracy:', confusionMatrix.consumersAccuracy());

@@ -1,0 +1,168 @@
+// Define the Area of Interest (AOI) and center the map on it
+Map.addLayer(table, {}, 'AOI');
+Map.centerObject(table);
+
+// Load Sentinel-2 Surface Reflectance ImageCollection
+var Sentinel_Sr = ee.ImageCollection('COPERNICUS/S2_SR_HARMONIZED');
+
+// Filter the image collection based on bounds, date, and cloud coverage, and create a median composite
+var image = Sentinel_Sr
+  .filterBounds(table)
+  .filterDate('2024-05-01', '2024-05-30')
+  .filter(ee.Filter.lt('CLOUDY_PIXEL_PERCENTAGE', 20))
+  .median()
+  .clip(table);
+
+// Define visualization parameters for Sentinel-2 image
+var visParams = {
+  bands: ['B4', 'B3', 'B2'],
+  min: 0,
+  max: 3000,
+  gamma: 1.4
+};
+Map.addLayer(image, visParams, 'Sentinel-2 Image');
+
+// Load the training points asset
+var trainingPoints = ee.FeatureCollection('projects/ee-shobhitchaturvediiitr/assets/tpoints');
+
+// Define label and input bands
+var label = 'Class';
+var bands = ['B2', 'B3', 'B4', 'B8'];
+var input = image.select(bands);
+
+// Sample the regions for training
+var trainImage = input.sampleRegions({
+  collection: trainingPoints,
+  properties: [label],
+  scale: 30
+});
+
+// Split the data into training (80%) and testing (20%) sets
+var trainingData = trainImage.randomColumn();
+var trainSet = trainingData.filter(ee.Filter.lt('random', 0.8));
+var testSet = trainingData.filter(ee.Filter.gte('random', 0.8));
+
+// Case 1: SVM with Linear Kernel, cost = 1
+var classifier_C1 = ee.Classifier.libsvm({
+  kernelType: 'LINEAR',
+  cost: 1
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 2: SVM with Polynomial Kernel, gamma = 0.5, cost = 1, degree = 3
+var classifier_C2 = ee.Classifier.libsvm({
+  kernelType: 'POLY',
+  gamma: 0.5,
+  cost: 1,
+  degree: 3
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 3: SVM with RBF Kernel, gamma = 0.1, cost = 10
+var classifier_C3 = ee.Classifier.libsvm({
+  kernelType: 'RBF',
+  gamma: 0.1,
+  cost: 10
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 4: SVM with RBF Kernel, gamma = 0.01, cost = 100
+var classifier_C4 = ee.Classifier.libsvm({
+  kernelType: 'RBF',
+  gamma: 0.01,
+  cost: 100
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 5: SVM with Sigmoid Kernel, gamma = 0.1, cost = 5
+var classifier_C5 = ee.Classifier.libsvm({
+  kernelType: 'SIGMOID',
+  gamma: 0.1,
+  cost: 5
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 6: SVM with Sigmoid Kernel, gamma = 0.5, cost = 50
+var classifier_C6 = ee.Classifier.libsvm({
+  kernelType: 'SIGMOID',
+  gamma: 0.5,
+  cost: 50
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 7: SVM with Linear Kernel, cost = 100
+var classifier_C7 = ee.Classifier.libsvm({
+  kernelType: 'LINEAR',
+  cost: 100
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Case 8: SVM with Polynomial Kernel, gamma = 0.5, cost = 10, degree = 3
+var classifier_C8 = ee.Classifier.libsvm({
+  kernelType: 'POLY',
+  gamma: 0.5,
+  cost: 10,
+  degree: 3
+}).train({
+  features: trainSet,
+  classProperty: label,
+  inputProperties: bands
+});
+
+// Classify the image using the trained classifier (Example: Case 8)
+var classified = input.classify(classifier_C8);
+
+// Define a palette for the classification
+var landcoverPalette = [
+  'blue',    // Water (1)
+  'yellow',  // Bareland (2)
+  'red',     // Buildup (3)
+  'green',   // Vegetation (4)
+  'black'    // Roads (5)
+];
+
+// Display the classification result on the map
+Map.addLayer(classified, {palette: landcoverPalette, min: 1, max: 5}, 'Case 8: LULC Classification');
+
+// Export the classified image to Google Drive
+Export.image.toDrive({
+  image: classified,
+  description: 'Case_8_LULC_Output',
+  folder: 'GEE_Files',
+  fileNamePrefix: 'Case_8_LULC',
+  scale: 30,
+  region: table.geometry(),
+  maxPixels: 1e13
+});
+
+// Accuracy Assessment
+var classifiedTest = testSet.classify(classifier_C8);
+var confusionMatrix = classifiedTest.errorMatrix('Class', 'classification');
+
+// Print confusion matrix and accuracy metrics
+print('Case 8 Confusion matrix:', confusionMatrix);
+print('Case 8 Overall Accuracy:', confusionMatrix.accuracy());
+print('Case 8 Kappa Coefficient:', confusionMatrix.kappa());
+print('Case 8 Producers Accuracy:', confusionMatrix.producersAccuracy());
+print('Case 8 Consumers Accuracy:', confusionMatrix.consumersAccuracy());
