@@ -1,2 +1,0 @@
-# GEELULC
-GEE-LULC Repository 
